@@ -262,39 +262,70 @@ async function switchMode(mode) {
 // SETTINGS SWITCHING: Mengatur Ukuran/Format/Model
 // ================================================================
 
-// Helper untuk mencari dan mengklik opsi dropdown yang mengandung teks tertentu
-async function selectDropdownOption(targetText) {
+// Normalisasi untuk perbandingan label: "16:9 (YouTube)" -> "169youtube",
+// "9 / 16" -> "916". Titik-dua, spasi, dan garis miring diabaikan.
+function normToken(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Alias label rasio yang dipakai Google Flow (mis. "Landscape", "Portrait").
+const RATIO_ALIASES = {
+  '169': ['landscape', 'horizontal', 'widescreen', 'wide'],
+  '916': ['portrait', 'vertical'],
+  '11': ['square'],
+  '34': ['portrait', 'vertical'],
+  '43': ['landscape', 'horizontal']
+};
+
+// Helper untuk mencari dan mengklik opsi dropdown yang mengandung teks tertentu.
+// scopeEl: batasi pencarian di dalam menu yang sedang terbuka. WAJIB ada —
+// tanpa menu terbuka kita tidak mengklik apa pun (mencegah klik tombol toggle
+// pengaturan itu sendiri). excludeEl: elemen yang tidak boleh diklik.
+async function selectDropdownOption(targetText, scopeEl, excludeEl) {
   if (!targetText) return false;
-  
-  const textLower = targetText.toLowerCase();
-  const normalizedTarget = textLower.replace(/\s+/g, '');
+  if (!scopeEl) {
+    console.warn(`[Flow] Opsi "${targetText}" dibatalkan: menu pengaturan tidak terbuka.`);
+    return false;
+  }
+
+  const textLower = String(targetText).toLowerCase();
+  const normTarget = normToken(targetText);
   const searchTerms = [textLower];
-  if (normalizedTarget === '916') searchTerms.push('portrait', 'vertical', '9/16');
-  if (normalizedTarget === '169') searchTerms.push('landscape', 'horizontal', '16/9');
+  if (RATIO_ALIASES[normTarget]) searchTerms.push(...RATIO_ALIASES[normTarget]);
   if (textLower.includes('nano banana pro')) searchTerms.push('nano banana 2', 'nano banana');
-  console.log(`[Flow] Mencari opsi menu: "${targetText}"...`);
-  
-  const allElements = document.querySelectorAll('mat-option, [role="option"], [role="menuitem"], li, .mdc-list-item, button, span, div');
+  console.log(`[Flow] Mencari opsi "${targetText}" di menu yang terbuka...`);
+
+  const allElements = scopeEl.querySelectorAll('mat-option, [role="option"], [role="menuitem"], mat-menu-item, .mat-mdc-menu-item, li, .mdc-list-item, button, span, div');
   const matches = [];
-  
+
   for (const el of allElements) {
+    if (excludeEl && (el === excludeEl || excludeEl.contains(el))) continue;
     const text = (el.textContent || '').trim().toLowerCase();
     const ariaLabel = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-    const normalizedText = text.replace(/\s+/g, '');
-    const normalizedAriaLabel = ariaLabel.replace(/\s+/g, '');
-    const bounds = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    const isVisible = bounds.width > 0 && bounds.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-    const matchedTerm = searchTerms.find(term => text.includes(term) || ariaLabel.includes(term) ||
-      normalizedText.includes(term.replace(/\s+/g, '')) || normalizedAriaLabel.includes(term.replace(/\s+/g, '')));
-    
-    if (isVisible && matchedTerm && text.length > 0 && text.length < 80) {
-      const isExactMatch = matchedTerm === textLower || matchedTerm === ariaLabel;
-      const menuItem = el.closest('mat-option, [role="option"], [role="menuitem"], [mat-menu-item], .mat-mdc-menu-item, .mat-menu-item, li, .mdc-list-item');
-      const clickable = menuItem || el;
-      const isMenuItem = clickable.matches('mat-option, [role="option"], [role="menuitem"], li, .mdc-list-item');
-      matches.push({ clickable, text, score: (isExactMatch ? 1000 : 0) + (isMenuItem ? 100 : 0) - text.length });
+    if (!text && !ariaLabel) continue;
+    if (!isVisible(el)) continue;
+    const normText = normToken(text);
+    const normAria = normToken(ariaLabel);
+
+    let score = -1;
+    if (text === textLower || ariaLabel === textLower) score = 1000;
+    else if (normTarget && (normText === normTarget || normAria === normTarget)) score = 950;
+    else if (normTarget && (normText.includes(normTarget) || normAria.includes(normTarget))) score = 600;
+    else {
+      const aliasHit = searchTerms.slice(1).some(term => {
+        const nt = normToken(term);
+        return text.includes(term) || ariaLabel.includes(term) ||
+          (nt && (normText.includes(nt) || normAria.includes(nt)));
+      });
+      if (aliasHit) score = 150;
     }
+    if (score < 0 || text.length > 80) continue;
+
+    const menuItem = el.closest('mat-option, [role="option"], [role="menuitem"], mat-menu-item, .mat-mdc-menu-item, .mat-menu-item, li, .mdc-list-item, button');
+    const clickable = menuItem || el;
+    if (excludeEl && (clickable === excludeEl || excludeEl.contains(clickable))) continue;
+    const isMenuItem = clickable.matches('mat-option, [role="option"], [role="menuitem"], mat-menu-item, li, .mdc-list-item');
+    matches.push({ clickable, text: text || ariaLabel, score: score + (isMenuItem ? 100 : 0) - Math.min(text.length, 80) });
   }
 
   matches.sort((a, b) => b.score - a.score);
@@ -305,114 +336,160 @@ async function selectDropdownOption(targetText) {
     await wait(600);
     return true;
   }
-  
-  console.warn(`[Flow] Opsi "${targetText}" tidak ditemukan di layar!`);
+
+  console.warn(`[Flow] Opsi "${targetText}" tidak ditemukan di menu yang terbuka!`);
   return false;
 }
 
-// Fungsi untuk membuka menu setelan utama (tombol model/settings di dekat input)
-async function openSettingsMenu(targetModelText) {
-  console.log(`[Flow] Mencari tombol pengaturan...`);
-  
-  const allBtns = document.querySelectorAll('button, [role="button"], [class*="button"]');
-  for (const btn of allBtns) {
-    const text = (btn.textContent || '').trim().toLowerCase();
-    const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-    const cls = (btn.className?.toString?.() || '').toLowerCase();
-    
-    if (text.includes('send') || aria.includes('send') || cls.includes('upload') || cls.includes('close') || text.includes('arrow')) {
-      continue;
+// Menu overlay yang sedang terbuka (Angular Material / menu ARIA).
+function findOpenMenuContainer() {
+  const candidates = document.querySelectorAll('.cdk-overlay-pane, [role="menu"], [role="listbox"], mat-menu-panel, .mat-mdc-menu-panel, .mat-select-panel, .mdc-menu-surface--open');
+  for (const c of candidates) {
+    if (!isVisible(c)) continue;
+    if (c.querySelector('mat-option, [role="option"], [role="menuitem"], mat-menu-item, .mat-mdc-menu-item, li, button')) return c;
+  }
+  return null;
+}
+
+// Cari tombol toggle pengaturan (biasanya di bilah composer, dekat input).
+// Hanya MENCARI — tidak mengklik.
+function findSettingsToggleButton(targetModelText) {
+  const blacklist = ['send', 'upload', 'close', 'cancel', 'back', 'delete', 'remove', 'more'];
+  const keys = ['x1', 'x2', 'x3', 'x4', '16:9', '9:16', '1:1', '3:4', '4:3', 'veo', 'banana', 'omni', 'flash', 'pro', 'lite', 'fast', 'quality'];
+  const isBlacklisted = (el) => {
+    const cls = (el.className?.toString?.() || '').toLowerCase();
+    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+    return blacklist.some(b => cls.includes(b) || aria.includes(b));
+  };
+
+  const scopes = [];
+  try {
+    const input = (typeof findPromptInput === 'function') ? findPromptInput() : null;
+    if (input) {
+      const bar = input.closest('form, [class*="prompt"], [class*="composer"], [class*="input-bar"], [class*="toolbar"], [class*="bottom"]');
+      if (bar) scopes.push(bar);
+      if (input.parentElement) scopes.push(input.parentElement);
     }
-    
-    // Tombol setelan di Google Flow biasanya bertuliskan "Nano Banana 2   x1" atau "Veo 3.1   16:9"
-    // Jadi kita cari tombol yang mengandung kata kunci model, ATAU kata kunci rasio
-    if (text.includes('x1') || text.includes('16:9') || text.includes('9:16') || text.includes('1:1') || 
-        text.includes('3:4') || text.includes('4:3') || text.includes('veo') || text.includes('banana')) {
-        
-      console.log(`[Flow] Membuka menu pengaturan via pencocokan tombol:`, text);
-      btn.click();
-      await wait(1000); // Tunggu agak lama biar animasi menu dropdown selesai
-      return true;
+  } catch (e) {}
+  scopes.push(document);
+
+  for (const scope of scopes) {
+    const btns = scope.querySelectorAll('button, [role="button"], mat-select, [role="combobox"]');
+    for (const btn of btns) {
+      if (isBlacklisted(btn)) continue;
+      const text = (btn.textContent || '').trim().toLowerCase();
+      if (!text || text.length > 40) continue;
+      if (keys.some(k => text.includes(k))) {
+        console.log('[Flow] Tombol pengaturan:', text.substring(0, 60));
+        return btn;
+      }
     }
   }
 
-  // Strategi 2: Cari berdasarkan kemiripan teks parsial (buang emoji dan kata spesifik)
-  // Misal "🍌 Nano Banana Pro" -> "nano banana"
-  let cleanModelName = targetModelText.replace(/[^\w\s]/gi, '').toLowerCase().replace('pro', '').replace('lite', '').trim();
-  const keywords = cleanModelName.split(' ').filter(k => k.length > 2);
-  
-  const modelBtns = document.querySelectorAll('button, [role="button"], mat-select, [role="combobox"]');
-  for (const btn of modelBtns) {
-    const text = (btn.textContent || '').trim().toLowerCase();
-    
-    // Cek apakah teks tombol mengandung salah satu kata kunci model (misal "nano" atau "banana")
-    const hasMatch = keywords.some(kw => text.includes(kw));
-    if (hasMatch && text.length < 30) {
-      console.log(`[Flow] Membuka menu pengaturan via pencocokan kata kunci ("${cleanModelName}"):`, text);
-      btn.click();
-      await wait(800);
-      return true;
+  // Fallback: kata kunci model (mis. "nano banana")
+  if (targetModelText) {
+    const clean = String(targetModelText).replace(/[^\w\s]/gi, '').toLowerCase().replace('pro', '').replace('lite', '').trim();
+    const keywords = clean.split(' ').filter(k => k.length > 2);
+    const modelBtns = document.querySelectorAll('button, [role="button"], mat-select, [role="combobox"]');
+    for (const btn of modelBtns) {
+      if (isBlacklisted(btn)) continue;
+      const text = (btn.textContent || '').trim().toLowerCase();
+      if (text && text.length < 30 && keywords.some(kw => text.includes(kw))) {
+        console.log('[Flow] Tombol pengaturan via kata kunci model:', text);
+        return btn;
+      }
     }
   }
-  
-  return false;
+  return null;
+}
+
+// Pastikan menu pengaturan terbuka. TIDAK mengklik ulang bila sudah terbuka
+// (mencegah menu malah tertutup / toggle-race).
+async function ensureMenuOpen(toggle) {
+  if (findOpenMenuContainer()) return true;
+  if (!toggle || !isVisible(toggle)) {
+    console.warn('[Flow] Tombol pengaturan tidak ditemukan atau tidak terlihat.');
+    return false;
+  }
+  toggle.click();
+  await wait(900);
+  if (findOpenMenuContainer()) return true;
+  await wait(900);
+  const opened = !!findOpenMenuContainer();
+  if (!opened) console.warn('[Flow] Menu pengaturan tidak terbuka setelah tombol diklik.');
+  return opened;
+}
+
+async function closeMenuIfOpen() {
+  if (!findOpenMenuContainer()) return;
+  document.body.click();
+  await wait(400);
+  if (findOpenMenuContainer()) {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(400);
+  }
 }
 
 // Fungsi utama untuk mengaplikasikan semua setelan
 async function applySettings(settings, mode) {
   if (!settings) return;
-  
+
   const isImageMode = mode.toLowerCase().includes('image');
   const targetModel = isImageMode ? settings.imageModel : settings.videoModel;
-  
+
   console.log(`[Flow] Menerapkan setelan: Model=${targetModel}, Rasio=${settings.aspectRatio}`);
 
-  // Buka menu utama
-  const menuOpened = await openSettingsMenu(targetModel);
-  if (!menuOpened) {
-    console.warn("[Flow] Gagal membuka menu pengaturan! Setelan mungkin tidak berubah.");
-    return;
-  }
+  // Cari ulang tombol toggle setiap langkah (DOM Angular bisa me-render ulang),
+  // pastikan menu terbuka (tanpa klik toggle buta), lalu pilih opsi di dalam menu.
+  const pickOption = async (label, keyword) => {
+    const toggle = findSettingsToggleButton(targetModel);
+    if (!toggle) {
+      console.warn(`[Flow] Gagal menemukan tombol pengaturan untuk ${label}.`);
+      return false;
+    }
+    if (!await ensureMenuOpen(toggle)) return false;
+    return selectDropdownOption(keyword, findOpenMenuContainer(), toggle);
+  };
 
   // 1. Pilih Model
   if (targetModel) {
     // Kita ambil kata kunci unik dari model untuk mencocokkan di dropdown
-    // Misalnya "🍌 Nano Banana Pro" -> "Nano Banana"
-    let modelKeyword = targetModel.replace(/[^\w\s-]/gi, '').trim().split('-')[0].trim();
-    if(modelKeyword.length < 3) modelKeyword = targetModel; // fallback
-    
-    await selectDropdownOption(modelKeyword);
+    // Misalnya "🍌 Nano Banana Pro" -> "Nano Banana Pro"
+    let modelKeyword = String(targetModel).replace(/[^\w\s-]/gi, '').trim().split('-')[0].trim();
+    if (modelKeyword.length < 3) modelKeyword = targetModel; // fallback
+
+    await pickOption('model', modelKeyword);
   }
 
-  // Buka menu lagi untuk setelan berikutnya karena dropdown biasanya tertutup setelah klik
-  await openSettingsMenu(targetModel);
-
-  // 2. Pilih Aspect Ratio
+  // 2. Pilih Aspect Ratio (+verifikasi benar-benar kepilih di tombol)
   if (settings.aspectRatio) {
     // Ekstrak rasio (misal "16:9 (YouTube)" -> "16:9")
-    const ratioKeyword = settings.aspectRatio.split(' ')[0];
-    await selectDropdownOption(ratioKeyword);
+    const ratioKeyword = String(settings.aspectRatio).split(' ')[0];
+    const ok = await pickOption('rasio', ratioKeyword);
+    await wait(300);
+    const toggle = findSettingsToggleButton(targetModel);
+    const toggleNorm = normToken(toggle ? toggle.textContent : '');
+    if (ok && toggleNorm.includes(normToken(ratioKeyword))) {
+      console.log(`[Flow] Rasio terverifikasi: ${ratioKeyword}.`);
+    } else {
+      console.warn(`[Flow] Rasio ${ratioKeyword} BELUM tentu kepilih. Tombol menunjukkan: "${toggle ? toggle.textContent.trim().substring(0, 60) : '(tidak ketemu)'}".`);
+    }
   }
 
   // 3. Jika mode video, pilih durasi
   if (!isImageMode && settings.videoOption) {
-    await openSettingsMenu(targetModel);
-    
-    // Ekstrak detik (misal "8 seconds" -> "8")
-    const durationKeyword = settings.videoOption.split(' ')[0];
-    // Kita cari misal "8s" atau "8"
-    await selectDropdownOption(`${durationKeyword}s`);
+    // Ekstrak detik (misal "8 seconds" -> "8s")
+    const durationKeyword = String(settings.videoOption).split(' ')[0];
+    await pickOption('durasi', `${durationKeyword}s`);
   }
 
   // Pilih jumlah output pada menu Flow (x1 sampai x4).
   if (settings.outputsPerPrompt) {
-    await openSettingsMenu(targetModel);
-    await selectDropdownOption(`x${settings.outputsPerPrompt}`);
+    await pickOption('output', `x${settings.outputsPerPrompt}`);
   }
-  
-  // Tutup menu jika masih terbuka (klik sembarang tempat atau escape)
-  document.body.click();
-  await wait(500);
+
+  // Tutup menu jika masih terbuka
+  await closeMenuIfOpen();
 }
 
 // ================================================================
