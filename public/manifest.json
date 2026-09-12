@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Automation - Auto Flow",
+  "version": "3.3.8",
+  "description": "Create batch videos and images on Google Flow via automated prompts.",
+  "action": {
+    "default_title": "Open Flow Automation"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "downloads"
+  ],
+  "host_permissions": [
+    "*://*.google.com/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

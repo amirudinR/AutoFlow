@@ -1,0 +1,6 @@
+{
+  "name": "Auto Flow Extension UI",
+  "description": "A clone of the VEO Automation extension popup interface for batch prompt processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
